@@ -53,17 +53,15 @@ const getTeacherSubjects = (req, res) => {
       si.sub_code,
       si.sub_name,
       si.yearlevel,
-      si.teacher_id,
       si.school_year,
       COUNT(DISTINCT ssa.section_id) as section_count
     FROM subject_info si
-    LEFT JOIN subject_section_assignments ssa 
+    INNER JOIN subject_section_assignments ssa 
       ON si.sub_code = ssa.sub_code 
-      AND si.teacher_id = ssa.teacher_id
       AND si.school_year = ssa.school_year
     INNER JOIN school_years sy ON si.school_year = sy.school_year
-    WHERE si.teacher_id = ? AND sy.is_active = 1
-    GROUP BY si.sub_code, si.sub_name, si.yearlevel, si.teacher_id, si.school_year
+    WHERE ssa.teacher_id = ? AND sy.is_active = 1
+    GROUP BY si.sub_code, si.sub_name, si.yearlevel, si.school_year
     ORDER BY si.yearlevel, si.sub_name
   `;
 

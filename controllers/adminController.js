@@ -3,7 +3,7 @@ const bcrypt = require("bcrypt");
 
 // ==================== STUDENTS MANAGEMENT ====================
 
-// Get all students (Grade 11-12 only)
+// Get all students (Grade 7-12)
 const getAllStudents = async (req, res) => {
   try {
     const { search, grade } = req.query;
@@ -24,8 +24,7 @@ const getAllStudents = async (req, res) => {
         u.status
       FROM student_info s
       INNER JOIN tblusers u ON s.user_id = u.user_id
-      WHERE u.status = 'active' 
-      AND s.yearlevel IN ('11', '12')
+      WHERE u.status = 'active'
     `;
     
     const params = [];
@@ -36,7 +35,7 @@ const getAllStudents = async (req, res) => {
       params.push(searchParam, searchParam, searchParam, searchParam);
     }
     
-    if (grade && (grade === '11' || grade === '12')) {
+    if (grade) {
       query += ` AND s.yearlevel = ?`;
       params.push(grade);
     }
@@ -126,6 +125,14 @@ const updateStudent = async (req, res) => {
       });
     }
     
+    // Validate strand is provided for SHS (Grade 11-12)
+    if (['11', '12'].includes(yearlevel) && !strand) {
+      return res.status(400).json({
+        success: false,
+        message: "Strand is required for Senior High School students (Grade 11-12)"
+      });
+    }
+    
     // Check if email already exists for another user
     if (email) {
       const emailCheckQuery = `SELECT user_id FROM tblusers WHERE email = ? AND user_id != ?`;
@@ -165,6 +172,9 @@ const updateStudent = async (req, res) => {
         
         const section_name = sectionResults[0].section_name;
         
+        // Set strand to null for JHS students (Grade 7-10)
+        const finalStrand = ['11', '12'].includes(yearlevel) ? strand : null;
+        
         const updateQuery = `
           UPDATE student_info 
           SET fname = ?, lname = ?, mname = ?, email = ?, gender = ?, 
@@ -174,7 +184,7 @@ const updateStudent = async (req, res) => {
         
         connection.query(
           updateQuery,
-          [fname, lname, mname || null, email, gender, yearlevel, section_id, section_name, strand, studentId],
+          [fname, lname, mname || null, email, gender, yearlevel, section_id, section_name, finalStrand, studentId],
           (err, result) => {
             if (err) {
               return res.status(500).json({
@@ -236,11 +246,20 @@ const addStudent = async (req, res) => {
       });
     }
     
-    // Only allow Grade 11-12
-    if (yearlevel !== '11' && yearlevel !== '12') {
+    // Validate grade level (7-12 only)
+    const validGrades = ['7', '8', '9', '10', '11', '12'];
+    if (!validGrades.includes(yearlevel)) {
       return res.status(400).json({
         success: false,
-        message: "Only Grade 11-12 students can be added"
+        message: "Only Grade 7-12 students can be added"
+      });
+    }
+    
+    // Validate strand is provided for SHS (Grade 11-12)
+    if (['11', '12'].includes(yearlevel) && !strand) {
+      return res.status(400).json({
+        success: false,
+        message: "Strand is required for Senior High School students (Grade 11-12)"
       });
     }
     
@@ -288,6 +307,12 @@ const addStudent = async (req, res) => {
         // Hash password
         const hashedPassword = await bcrypt.hash(password, 10);
         
+        // Determine position based on grade level
+        const position = ['11', '12'].includes(yearlevel) ? 'SHS' : 'JHS';
+        
+        // Set strand to null for JHS students (Grade 7-10)
+        const finalStrand = ['11', '12'].includes(yearlevel) ? strand : null;
+        
         // Insert into tblusers
         const insertUserQuery = `
           INSERT INTO tblusers (user_id, password, email, status, role)
@@ -307,12 +332,12 @@ const addStudent = async (req, res) => {
           const insertStudentQuery = `
             INSERT INTO student_info 
             (user_id, fname, lname, mname, email, gender, yearlevel, section_id, section_name, strand, position, status_enroll)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SHS', 'Enrolled')
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Enrolled')
           `;
           
           connection.query(
             insertStudentQuery,
-            [user_id, fname, lname, mname || null, email, gender, yearlevel, section_id, section.section_name, strand],
+            [user_id, fname, lname, mname || null, email, gender, yearlevel, section_id, section.section_name, finalStrand, position],
             (err) => {
               if (err) {
                 // Rollback user creation
@@ -633,12 +658,19 @@ const archiveTeacher = async (req, res) => {
     // Update user status to archived
     const archiveQuery = `UPDATE tblusers SET status = 'archived' WHERE user_id = ?`;
     
-    connection.query(archiveQuery, [teacherId], (err) => {
+    connection.query(archiveQuery, [teacherId], (err, result) => {
       if (err) {
         return res.status(500).json({
           success: false,
           message: "Error archiving teacher",
           error: err.message
+        });
+      }
+
+      if (result.affectedRows === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "Teacher not found"
         });
       }
       
@@ -648,11 +680,50 @@ const archiveTeacher = async (req, res) => {
         SET adviser_id = NULL 
         WHERE adviser_id = ?
       `;
-      connection.query(updateSectionQuery, [teacherId]);
-      
-      res.json({
-        success: true,
-        message: "Teacher archived successfully"
+      connection.query(updateSectionQuery, [teacherId], (sectionErr) => {
+        if (sectionErr) {
+          return res.status(500).json({
+            success: false,
+            message: "Error clearing adviser assignment",
+            error: sectionErr.message
+          });
+        }
+
+        const unassignSubjectsQuery = `
+          UPDATE subject_info
+          SET teacher_id = NULL
+          WHERE teacher_id = ?
+        `;
+
+        connection.query(unassignSubjectsQuery, [teacherId], (subjectErr) => {
+          if (subjectErr) {
+            return res.status(500).json({
+              success: false,
+              message: "Error detaching teacher from subjects",
+              error: subjectErr.message
+            });
+          }
+
+          const deleteAssignmentsQuery = `
+            DELETE FROM subject_section_assignments
+            WHERE teacher_id = ?
+          `;
+
+          connection.query(deleteAssignmentsQuery, [teacherId], (assignmentErr) => {
+            if (assignmentErr) {
+              return res.status(500).json({
+                success: false,
+                message: "Error removing section assignments",
+                error: assignmentErr.message
+              });
+            }
+
+            res.json({
+              success: true,
+              message: "Teacher archived successfully"
+            });
+          });
+        });
       });
     });
   } catch (error) {
@@ -841,6 +912,338 @@ const updateSubject = async (req, res) => {
     );
   } catch (error) {
     console.error("Error in updateSubject:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message
+    });
+  }
+};
+
+// ==================== SUBJECT-SECTION ASSIGNMENTS ====================
+
+const getSubjectSectionAssignments = async (req, res) => {
+  try {
+    const { teacher_id, section_id, sub_code, school_year } = req.query;
+    
+    let query = `
+      SELECT 
+        ssa.id,
+        ssa.sub_code,
+        COALESCE(si.sub_name, '') as sub_name,
+        ssa.teacher_id,
+        CONCAT(COALESCE(t.fname, ''), ' ', COALESCE(t.lname, '')) as teacher_name,
+        ssa.section_id,
+        COALESCE(sec.section_name, '') as section_name,
+        ssa.yearlevel,
+        ssa.school_year,
+        ssa.created_at
+      FROM subject_section_assignments ssa
+      LEFT JOIN subject_info si 
+        ON ssa.sub_code = si.sub_code AND ssa.school_year = si.school_year
+      LEFT JOIN teacher_info t ON ssa.teacher_id = t.user_id
+      LEFT JOIN section_info sec ON ssa.section_id = sec.section_id
+      WHERE 1=1
+    `;
+    
+    const params = [];
+    
+    if (teacher_id) {
+      query += ` AND ssa.teacher_id = ?`;
+      params.push(teacher_id);
+    }
+    
+    if (section_id) {
+      query += ` AND ssa.section_id = ?`;
+      params.push(section_id);
+    }
+    
+    if (sub_code) {
+      query += ` AND ssa.sub_code = ?`;
+      params.push(sub_code);
+    }
+    
+    if (school_year) {
+      query += ` AND ssa.school_year = ?`;
+      params.push(school_year);
+    }
+    
+    query += ` ORDER BY ssa.school_year DESC, ssa.yearlevel, sec.section_name`;
+    
+    connection.query(query, params, (err, results) => {
+      if (err) {
+        console.error("Error fetching assignments:", err);
+        return res.status(500).json({
+          success: false,
+          message: "Error fetching assignments",
+          error: err.message
+        });
+      }
+      
+      res.json({
+        success: true,
+        data: results
+      });
+    });
+  } catch (error) {
+    console.error("Error in getSubjectSectionAssignments:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message
+    });
+  }
+};
+
+const validateAssignmentEntities = (sub_code, teacher_id, section_id, school_year, res, callback) => {
+  const subjectQuery = `
+    SELECT sub_name, yearlevel
+    FROM subject_info
+    WHERE sub_code = ? AND school_year = ?
+  `;
+  
+  connection.query(subjectQuery, [sub_code, school_year], (subjectErr, subjectResults) => {
+    if (subjectErr) {
+      return res.status(500).json({
+        success: false,
+        message: "Error validating subject",
+        error: subjectErr.message
+      });
+    }
+    
+    if (subjectResults.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: "Subject not found for provided school year"
+      });
+    }
+    
+    const subject = subjectResults[0];
+    
+    const teacherQuery = `SELECT user_id FROM teacher_info WHERE user_id = ?`;
+    connection.query(teacherQuery, [teacher_id], (teacherErr, teacherResults) => {
+      if (teacherErr) {
+        return res.status(500).json({
+          success: false,
+          message: "Error validating teacher",
+          error: teacherErr.message
+        });
+      }
+      
+      if (teacherResults.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "Teacher not found"
+        });
+      }
+      
+      const sectionQuery = `
+        SELECT section_name, yearlevel, school_year
+        FROM section_info
+        WHERE section_id = ?
+      `;
+      
+      connection.query(sectionQuery, [section_id], (sectionErr, sectionResults) => {
+        if (sectionErr) {
+          return res.status(500).json({
+            success: false,
+            message: "Error validating section",
+            error: sectionErr.message
+          });
+        }
+        
+        if (sectionResults.length === 0) {
+          return res.status(404).json({
+            success: false,
+            message: "Section not found"
+          });
+        }
+        
+        const section = sectionResults[0];
+        
+        if (section.school_year !== school_year) {
+          return res.status(400).json({
+            success: false,
+            message: "Section does not belong to the specified school year"
+          });
+        }
+        
+        if (section.yearlevel !== subject.yearlevel) {
+          return res.status(400).json({
+            success: false,
+            message: "Subject year level does not match section year level"
+          });
+        }
+        
+        callback({
+          yearlevel: subject.yearlevel
+        });
+      });
+    });
+  });
+};
+
+const addSubjectSectionAssignment = async (req, res) => {
+  try {
+    const { sub_code, teacher_id, section_id, school_year } = req.body;
+    
+    if (!sub_code || !teacher_id || !section_id || !school_year) {
+      return res.status(400).json({
+        success: false,
+        message: "Missing required fields"
+      });
+    }
+    
+    validateAssignmentEntities(sub_code, teacher_id, section_id, school_year, res, ({ yearlevel }) => {
+      const insertQuery = `
+        INSERT INTO subject_section_assignments
+          (sub_code, teacher_id, section_id, yearlevel, school_year)
+        VALUES (?, ?, ?, ?, ?)
+      `;
+      
+      connection.query(
+        insertQuery,
+        [sub_code, teacher_id, section_id, yearlevel, school_year],
+        (err) => {
+          if (err) {
+            if (err.code === "ER_DUP_ENTRY") {
+              return res.status(400).json({
+                success: false,
+                message: "Assignment already exists for this subject, teacher, and section"
+              });
+            }
+            return res.status(500).json({
+              success: false,
+              message: "Error creating assignment",
+              error: err.message
+            });
+          }
+          
+          res.status(201).json({
+            success: true,
+            message: "Assignment created successfully"
+          });
+        }
+      );
+    });
+  } catch (error) {
+    console.error("Error in addSubjectSectionAssignment:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message
+    });
+  }
+};
+
+const updateSubjectSectionAssignment = async (req, res) => {
+  try {
+    const { assignmentId } = req.params;
+    const { sub_code, teacher_id, section_id, school_year } = req.body;
+    
+    if (!sub_code || !teacher_id || !section_id || !school_year) {
+      return res.status(400).json({
+        success: false,
+        message: "Missing required fields"
+      });
+    }
+    
+    const findAssignmentQuery = `SELECT id FROM subject_section_assignments WHERE id = ?`;
+    connection.query(findAssignmentQuery, [assignmentId], (findErr, results) => {
+      if (findErr) {
+        return res.status(500).json({
+          success: false,
+          message: "Error fetching assignment",
+          error: findErr.message
+        });
+      }
+      
+      if (results.length === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "Assignment not found"
+        });
+      }
+      
+      validateAssignmentEntities(sub_code, teacher_id, section_id, school_year, res, ({ yearlevel }) => {
+        const updateQuery = `
+          UPDATE subject_section_assignments
+          SET sub_code = ?, teacher_id = ?, section_id = ?, yearlevel = ?, school_year = ?
+          WHERE id = ?
+        `;
+        
+        connection.query(
+          updateQuery,
+          [sub_code, teacher_id, section_id, yearlevel, school_year, assignmentId],
+          (err, updateResult) => {
+            if (err) {
+              if (err.code === "ER_DUP_ENTRY") {
+                return res.status(400).json({
+                  success: false,
+                  message: "Assignment already exists for this subject, teacher, and section"
+                });
+              }
+              return res.status(500).json({
+                success: false,
+                message: "Error updating assignment",
+                error: err.message
+              });
+            }
+            
+            if (updateResult.affectedRows === 0) {
+              return res.status(404).json({
+                success: false,
+                message: "Assignment not found"
+              });
+            }
+            
+            res.json({
+              success: true,
+              message: "Assignment updated successfully"
+            });
+          }
+        );
+      });
+    });
+  } catch (error) {
+    console.error("Error in updateSubjectSectionAssignment:", error);
+    res.status(500).json({
+      success: false,
+      message: "Internal server error",
+      error: error.message
+    });
+  }
+};
+
+const deleteSubjectSectionAssignment = async (req, res) => {
+  try {
+    const { assignmentId } = req.params;
+    
+    const deleteQuery = `DELETE FROM subject_section_assignments WHERE id = ?`;
+    
+    connection.query(deleteQuery, [assignmentId], (err, result) => {
+      if (err) {
+        return res.status(500).json({
+          success: false,
+          message: "Error deleting assignment",
+          error: err.message
+        });
+      }
+      
+      if (result.affectedRows === 0) {
+        return res.status(404).json({
+          success: false,
+          message: "Assignment not found"
+        });
+      }
+      
+      res.json({
+        success: true,
+        message: "Assignment deleted successfully"
+      });
+    });
+  } catch (error) {
+    console.error("Error in deleteSubjectSectionAssignment:", error);
     res.status(500).json({
       success: false,
       message: "Internal server error",
@@ -2042,6 +2445,10 @@ module.exports = {
   getAllSubjects,
   addSubject,
   updateSubject,
+  getSubjectSectionAssignments,
+  addSubjectSectionAssignment,
+  updateSubjectSectionAssignment,
+  deleteSubjectSectionAssignment,
   
   // Admins
   getAllAdmins,

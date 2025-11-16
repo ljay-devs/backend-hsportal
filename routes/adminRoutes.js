@@ -1,21 +1,19 @@
 const express = require("express");
 const router = express.Router();
 const adminController = require("../controllers/adminController");
+const { verifyToken } = require("../middleware/authMiddleware");
 
-// Middleware to verify admin authentication (you should implement this)
+// Ensure request has a valid JWT first
+router.use(verifyToken);
+
+// Middleware to verify admin role
 const verifyAdmin = (req, res, next) => {
-  // TODO: Implement JWT verification and check if user is admin
-  // For now, we'll just pass through
-  // Example:
-  // const token = req.headers.authorization?.split(' ')[1];
-  // if (!token) return res.status(401).json({ success: false, message: "Unauthorized" });
-  // jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
-  //   if (err || decoded.role !== 'Admin') {
-  //     return res.status(403).json({ success: false, message: "Forbidden" });
-  //   }
-  //   req.user = decoded;
-  //   next();
-  // });
+  if (!req.user || req.user.role !== "Admin") {
+    return res.status(403).json({
+      success: false,
+      message: "Access denied. Admins only."
+    });
+  }
   next();
 };
 
@@ -110,6 +108,12 @@ router.post("/grading-periods", adminController.upsertGradingPeriod);
 
 // PUT /api/admin/grading-periods/:periodId/toggle - Open/Close grade input period
 router.put("/grading-periods/:periodId/toggle", adminController.toggleGradeInputPeriod);
+
+// ==================== SUBJECT-SECTION ASSIGNMENTS ====================
+router.get("/assignments", adminController.getSubjectSectionAssignments);
+router.post("/assignments", adminController.addSubjectSectionAssignment);
+router.put("/assignments/:assignmentId", adminController.updateSubjectSectionAssignment);
+router.delete("/assignments/:assignmentId", adminController.deleteSubjectSectionAssignment);
 
 // ==================== REPORTS/REATTEMPT REQUESTS ROUTES ====================
 // GET /api/admin/reports - Get all reattempt requests with optional filters
