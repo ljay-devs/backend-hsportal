@@ -22,6 +22,24 @@ npm start
 
 Base URL: `http://localhost:6969/api`
 
+### Environment Variables
+
+Create a `.env` file (see `.env.example` if present) with at least:
+
+```
+PORT=6969
+JWT_SECRET=replace_me
+JWT_EXPIRES_IN=30m
+DB_HOST=localhost
+DB_PORT=3306
+DB_USER=your_mysql_user
+DB_PASSWORD=your_mysql_password
+DB_NAME=dbhighschoolportal
+ALLOWED_ORIGINS=http://localhost:3000,http://localhost:5500,http://127.0.0.1:5500
+```
+
+The server will refuse to start if any required variable is missing once the connection layer is updated.
+
 ## 🎯 Frontend Implementation (Vanilla JS)
 
 All frontend work is documented with complete, production-ready guides. No frameworks required.

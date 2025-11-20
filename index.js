@@ -24,20 +24,32 @@ const logger = (req, res, next) => {
 
 // Apply middleware
 app.use(logger);
+
+const allowedOrigins = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : [];
+
 app.use(cors({
-  origin: ['http://localhost:3000', 'http://localhost:5500', 'http://127.0.0.1:5500'],
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.indexOf(origin) === -1) {
+      var msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+      return callback(new Error(msg), false);
+    }
+    return callback(null, true);
+  },
   credentials: true
 }));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Database connection
-connection.connect((err) => {
+// Database connection check
+connection.getConnection((err, conn) => {
   if (err) {
     console.error("Error connecting to MySQL:", err);
     process.exit(1);
   } else {
     console.log("Connected to MySQL Database");
+    conn.release(); // Release the connection back to the pool
   }
 });
 

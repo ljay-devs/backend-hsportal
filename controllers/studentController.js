@@ -2,7 +2,9 @@ const jwt = require("jsonwebtoken");
 const connection = require("../database/db");
 const bcrypt = require('bcryptjs');
 
-const JWT_SECRET = process.env.JWT_SECRET || "your-secret-key-change-this-in-production";
+// JWT_SECRET is handled in authMiddleware, removing unused declaration if not needed here
+// or strictly requiring it if used for specific operations
+const JWT_SECRET = process.env.JWT_SECRET; 
 
 const getStudentProfile = (req, res) => {
   const userId = req.user.user_id;
