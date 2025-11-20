@@ -1,13 +1,15 @@
 const jwt = require("jsonwebtoken");
 const connection = require("../database/db");
+const asyncHandler = require("../middleware/asyncHandler");
 
 if (!process.env.JWT_SECRET) {
   throw new Error("FATAL ERROR: JWT_SECRET is not defined.");
 }
 
 const JWT_SECRET = process.env.JWT_SECRET;
+const db = connection.promise();
 
-const verifyUser = (req, res) => {
+const verifyUser = asyncHandler(async (req, res) => {
   const userId = req.user.user_id;
   const role = req.user.role;
 
@@ -68,46 +70,33 @@ const verifyUser = (req, res) => {
     });
   }
 
-  connection.query(sql, [userId], (err, results) => {
-    if (err) {
-      console.error("Error verifying user:", err);
-      return res.status(500).json({
-        success: false,
-        message: "Error verifying user"
-      });
-    }
+  const [results] = await db.query(sql, [userId]);
 
-    if (results.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "User not found or inactive"
-      });
-    }
-
-    res.status(200).json({
-      success: true,
-      message: "User verified",
-      user: results[0]
+  if (results.length === 0) {
+    return res.status(404).json({
+      success: false,
+      message: "User not found or inactive"
     });
-  });
-};
+  }
 
-const logout = (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: "User verified",
+    user: results[0]
+  });
+});
+
+const logout = asyncHandler(async (req, res) => {
   const userId = req.user.user_id;
   
   const sql = "UPDATE tblusers SET last_login = CURRENT_TIMESTAMP WHERE user_id = ?";
+  await db.query(sql, [userId]);
   
-  connection.query(sql, [userId], (err) => {
-    if (err) {
-      console.error("Error updating last login:", err);
-    }
-    
-    res.status(200).json({
-      success: true,
-      message: "Logged out successfully"
-    });
+  res.status(200).json({
+    success: true,
+    message: "Logged out successfully"
   });
-};
+});
 
 module.exports = {
   verifyUser,

@@ -1,6 +1,12 @@
 const connection = require("../database/db");
+const asyncHandler = require("../middleware/asyncHandler");
+const bcrypt = require("bcryptjs");
 
-const getTeacherProfile = (req, res) => {
+const db = connection.promise();
+const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const MIN_PASSWORD_LENGTH = 8;
+
+const getTeacherProfile = asyncHandler(async (req, res) => {
   const userId = req.user.user_id;
 
   const sql = `
@@ -21,31 +27,23 @@ const getTeacherProfile = (req, res) => {
     WHERE t.user_id = ? AND u.status = 'active'
   `;
 
-  connection.query(sql, [userId], (err, results) => {
-    if (err) {
-      console.error("Error fetching teacher profile:", err);
-      return res.status(500).json({
-        success: false,
-        message: "Error fetching profile"
-      });
-    }
+  const [results] = await db.query(sql, [userId]);
 
-    if (results.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Teacher profile not found"
-      });
-    }
-
-    console.log(`Teacher profile fetched for ${userId}`);
-    res.status(200).json({
-      success: true,
-      data: results[0]
+  if (results.length === 0) {
+    return res.status(404).json({
+      success: false,
+      message: "Teacher profile not found"
     });
-  });
-};
+  }
 
-const getTeacherSubjects = (req, res) => {
+  console.log(`Teacher profile fetched for ${userId}`);
+  res.status(200).json({
+    success: true,
+    data: results[0]
+  });
+});
+
+const getTeacherSubjects = asyncHandler(async (req, res) => {
   const userId = req.user.user_id;
 
   const sql = `
@@ -65,24 +63,16 @@ const getTeacherSubjects = (req, res) => {
     ORDER BY si.yearlevel, si.sub_name
   `;
 
-  connection.query(sql, [userId], (err, results) => {
-    if (err) {
-      console.error("Error fetching teacher subjects:", err);
-      return res.status(500).json({
-        success: false,
-        message: "Error fetching subjects"
-      });
-    }
+  const [results] = await db.query(sql, [userId]);
 
-    console.log(`Fetched ${results.length} subjects for teacher ${userId}`);
-    res.status(200).json({
-      success: true,
-      data: results
-    });
+  console.log(`Fetched ${results.length} subjects for teacher ${userId}`);
+  res.status(200).json({
+    success: true,
+    data: results
   });
-};
+});
 
-const getSubjectSections = (req, res) => {
+const getSubjectSections = asyncHandler(async (req, res) => {
   const userId = req.user.user_id;
   const { subCode } = req.params;
   const { schoolYear } = req.query;
@@ -127,24 +117,16 @@ const getSubjectSections = (req, res) => {
     params = [subCode, userId];
   }
 
-  connection.query(sql, params, (err, results) => {
-    if (err) {
-      console.error("Error fetching sections:", err);
-      return res.status(500).json({
-        success: false,
-        message: "Error fetching sections"
-      });
-    }
+  const [results] = await db.query(sql, params);
 
-    console.log(`Fetched ${results.length} sections for ${subCode}`);
-    res.status(200).json({
-      success: true,
-      data: results
-    });
+  console.log(`Fetched ${results.length} sections for ${subCode}`);
+  res.status(200).json({
+    success: true,
+    data: results
   });
-};
+});
 
-const getStudentsForGrading = (req, res) => {
+const getStudentsForGrading = asyncHandler(async (req, res) => {
   const userId = req.user.user_id;
   const { sectionId, subCode } = req.params;
   const { schoolYear, periodId } = req.query;
@@ -164,123 +146,97 @@ const getStudentsForGrading = (req, res) => {
       AND gp.period_id = ?
   `;
 
-  connection.query(checkPeriodSql, [sectionId, schoolYear, periodId], (err, periodResults) => {
-    if (err) {
-      console.error("Error checking grading period:", err);
-      return res.status(500).json({
-        success: false,
-        message: "Error checking grading period"
-      });
+  const [periodResults] = await db.query(checkPeriodSql, [sectionId, schoolYear, periodId]);
+
+  if (periodResults.length === 0) {
+    return res.status(404).json({
+      success: false,
+      message: "Grading period not found"
+    });
+  }
+
+  const period = periodResults[0];
+  const isOpen = period.is_open === 1;
+  const now = new Date();
+  const inputStart = period.grade_input_start ? new Date(period.grade_input_start) : null;
+  const inputEnd = period.grade_input_end ? new Date(period.grade_input_end) : null;
+  const withinDateRange = inputStart && inputEnd ? now >= inputStart && now <= inputEnd : false;
+
+  const checkSubmissionSql = `
+    SELECT submission_id, submitted_at, can_edit
+    FROM grade_submissions
+    WHERE teacher_id = ?
+      AND section_id = ?
+      AND sub_code = ?
+      AND school_year = ?
+      AND period_id = ?
+  `;
+
+  const [submissionResults] = await db.query(
+    checkSubmissionSql,
+    [userId, sectionId, subCode, schoolYear, periodId]
+  );
+
+  const hasSubmitted = submissionResults.length > 0;
+  const canEdit = hasSubmitted ? submissionResults[0].can_edit === 1 : false;
+
+  const studentsSql = `
+    SELECT
+      si.user_id,
+      si.fname,
+      si.lname,
+      si.mname,
+      si.gender,
+      gr.final_grade,
+      gr.remarks,
+      gr.grade_id
+    FROM student_info si
+    INNER JOIN section_info sec ON si.section_id = sec.section_id AND sec.school_year = ?
+    LEFT JOIN grade_records gr
+      ON si.user_id = gr.user_id
+      AND gr.sub_code = ?
+      AND gr.teacher_id = ?
+      AND gr.section_id = ?
+      AND gr.school_year = ?
+      AND gr.period_id = ?
+    WHERE si.section_id = ?
+      AND si.status_enroll = 'Enrolled'
+    ORDER BY si.lname, si.fname
+  `;
+
+  const [students] = await db.query(
+    studentsSql,
+    [schoolYear, subCode, userId, sectionId, schoolYear, periodId, sectionId]
+  );
+
+  console.log(`Fetched ${students.length} students for grading`);
+  res.status(200).json({
+    success: true,
+    data: {
+      students,
+      gradingPeriod: {
+        period_id: period.period_id,
+        grading_period: period.grading_period,
+        is_open: isOpen,
+        within_date_range: withinDateRange,
+        input_start: period.grade_input_start,
+        input_end: period.grade_input_end
+      },
+      submission: {
+        has_submitted: hasSubmitted,
+        can_edit: canEdit,
+        submitted_at: hasSubmitted ? submissionResults[0].submitted_at : null
+      },
+      can_input: (isOpen && withinDateRange && !hasSubmitted) || canEdit
     }
-
-    if (periodResults.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "Grading period not found"
-      });
-    }
-
-    const period = periodResults[0];
-    const isOpen = period.is_open === 1;
-    const now = new Date();
-    const inputStart = new Date(period.grade_input_start);
-    const inputEnd = new Date(period.grade_input_end);
-    const withinDateRange = now >= inputStart && now <= inputEnd;
-
-    const checkSubmissionSql = `
-      SELECT submission_id, submitted_at, can_edit
-      FROM grade_submissions
-      WHERE teacher_id = ?
-        AND section_id = ?
-        AND sub_code = ?
-        AND school_year = ?
-        AND period_id = ?
-    `;
-
-    connection.query(
-      checkSubmissionSql,
-      [userId, sectionId, subCode, schoolYear, periodId],
-      (err, submissionResults) => {
-        if (err) {
-          console.error("Error checking submission:", err);
-          return res.status(500).json({
-            success: false,
-            message: "Error checking submission status"
-          });
-        }
-
-        const hasSubmitted = submissionResults.length > 0;
-        const canEdit = hasSubmitted ? submissionResults[0].can_edit === 1 : false;
-
-        const studentsSql = `
-          SELECT
-            si.user_id,
-            si.fname,
-            si.lname,
-            si.mname,
-            si.gender,
-            gr.final_grade,
-            gr.remarks,
-            gr.grade_id
-          FROM student_info si
-          INNER JOIN section_info sec ON si.section_id = sec.section_id AND sec.school_year = ?
-          LEFT JOIN grade_records gr
-            ON si.user_id = gr.user_id
-            AND gr.sub_code = ?
-            AND gr.teacher_id = ?
-            AND gr.section_id = ?
-            AND gr.school_year = ?
-            AND gr.period_id = ?
-          WHERE si.section_id = ?
-            AND si.status_enroll = 'Enrolled'
-          ORDER BY si.lname, si.fname
-        `;
-
-        connection.query(
-          studentsSql,
-          [schoolYear, subCode, userId, sectionId, schoolYear, periodId, sectionId],
-          (err, students) => {
-            if (err) {
-              console.error("Error fetching students:", err);
-              return res.status(500).json({
-                success: false,
-                message: "Error fetching students"
-              });
-            }
-
-            console.log(`Fetched ${students.length} students for grading`);
-            res.status(200).json({
-              success: true,
-              data: {
-                students: students,
-                gradingPeriod: {
-                  period_id: period.period_id,
-                  grading_period: period.grading_period,
-                  is_open: isOpen,
-                  within_date_range: withinDateRange,
-                  input_start: period.grade_input_start,
-                  input_end: period.grade_input_end
-                },
-                submission: {
-                  has_submitted: hasSubmitted,
-                  can_edit: canEdit,
-                  submitted_at: hasSubmitted ? submissionResults[0].submitted_at : null
-                },
-                can_input: (isOpen && withinDateRange && !hasSubmitted) || canEdit
-              }
-            });
-          }
-        );
-      }
-    );
   });
-};
+});
 
-const submitGrades = (req, res) => {
+const submitGrades = asyncHandler(async (req, res) => {
   const userId = req.user.user_id;
   const { sectionId, subCode, schoolYear, periodId, grades } = req.body;
 
-  if (!sectionId || !subCode || !schoolYear || !periodId || !grades || !Array.isArray(grades)) {
+  if (!sectionId || !subCode || !schoolYear || !periodId || !Array.isArray(grades)) {
     return res.status(400).json({
       success: false,
       message: "Missing required fields"
@@ -297,195 +253,135 @@ const submitGrades = (req, res) => {
       AND period_id = ?
   `;
 
-  connection.query(
+  const [submissionRows] = await db.query(
     checkSubmissionSql,
-    [userId, sectionId, subCode, schoolYear, periodId],
-    (err, results) => {
-      if (err) {
-        console.error("Error checking submission:", err);
-        return res.status(500).json({
-          success: false,
-          message: "Error submitting grades"
-        });
+    [userId, sectionId, subCode, schoolYear, periodId]
+  );
+
+  if (submissionRows.length > 0 && submissionRows[0].can_edit === 0) {
+    return res.status(403).json({
+      success: false,
+      message: "Grades already submitted. Request re-attempt from admin to edit."
+    });
+  }
+
+  const periodSql = `
+    SELECT grading_period, yearlevel
+    FROM grading_periods gp
+    INNER JOIN section_info sec ON gp.yearlevel = sec.yearlevel
+    WHERE gp.period_id = ? AND gp.school_year = ? AND sec.section_id = ?
+  `;
+
+  const [periodResults] = await db.query(periodSql, [periodId, schoolYear, sectionId]);
+
+  if (periodResults.length === 0) {
+    return res.status(500).json({
+      success: false,
+      message: "Error fetching grading period"
+    });
+  }
+
+  const gradingPeriod = periodResults[0].grading_period;
+  const yearlevel = periodResults[0].yearlevel;
+
+  const conn = await db.getConnection();
+  let transactionStarted = false;
+
+  try {
+    await conn.beginTransaction();
+    transactionStarted = true;
+
+    for (const grade of grades) {
+      const { student_id, final_grade } = grade;
+
+      if (final_grade === null || final_grade === undefined || final_grade === '') {
+        continue;
       }
 
-      if (results.length > 0 && results[0].can_edit === 0) {
-        return res.status(403).json({
-          success: false,
-          message: "Grades already submitted. Request re-attempt from admin to edit."
-        });
+      const gradeValue = parseFloat(final_grade);
+      if (Number.isNaN(gradeValue) || gradeValue < 0 || gradeValue > 100) {
+        res.status(400);
+        throw new Error(`Invalid grade for student ${student_id}`);
       }
 
-      const periodSql = `
-        SELECT grading_period, yearlevel
-        FROM grading_periods gp
-        INNER JOIN section_info sec ON gp.yearlevel = sec.yearlevel
-        WHERE gp.period_id = ? AND gp.school_year = ? AND sec.section_id = ?
+      const remarks = gradeValue >= 75 ? 'Passed' : 'Failed';
+
+      const upsertGradeSql = `
+        INSERT INTO grade_records 
+          (user_id, sub_code, teacher_id, section_id, yearlevel, school_year, period_id, grading_period, final_grade, remarks)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON DUPLICATE KEY UPDATE
+          final_grade = VALUES(final_grade),
+          remarks = VALUES(remarks)
       `;
 
-      connection.query(periodSql, [periodId, schoolYear, sectionId], (err, periodResults) => {
-        if (err || periodResults.length === 0) {
-          console.error("Error fetching period:", err);
-          return res.status(500).json({
-            success: false,
-            message: "Error fetching grading period"
-          });
-        }
-
-        const gradingPeriod = periodResults[0].grading_period;
-        const yearlevel = periodResults[0].yearlevel;
-
-        connection.beginTransaction((err) => {
-          if (err) {
-            console.error("Transaction error:", err);
-            return res.status(500).json({
-              success: false,
-              message: "Error submitting grades"
-            });
-          }
-
-          const gradePromises = grades.map((grade) => {
-            return new Promise((resolve, reject) => {
-              const { student_id, final_grade } = grade;
-              
-              if (final_grade === null || final_grade === undefined || final_grade === '') {
-                return resolve();
-              }
-
-              const gradeValue = parseFloat(final_grade);
-              if (isNaN(gradeValue) || gradeValue < 0 || gradeValue > 100) {
-                return reject(new Error(`Invalid grade for student ${student_id}`));
-              }
-
-              const remarks = gradeValue >= 75 ? 'Passed' : 'Failed';
-
-              const upsertGradeSql = `
-                INSERT INTO grade_records 
-                  (user_id, sub_code, teacher_id, section_id, yearlevel, school_year, period_id, grading_period, final_grade, remarks)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON DUPLICATE KEY UPDATE
-                  final_grade = VALUES(final_grade),
-                  remarks = VALUES(remarks)
-              `;
-
-              connection.query(
-                upsertGradeSql,
-                [student_id, subCode, userId, sectionId, yearlevel, schoolYear, periodId, gradingPeriod, gradeValue, remarks],
-                (err) => {
-                  if (err) return reject(err);
-                  resolve();
-                }
-              );
-            });
-          });
-
-          Promise.all(gradePromises)
-            .then(() => {
-              const submissionSql = `
-                INSERT INTO grade_submissions 
-                  (teacher_id, section_id, sub_code, school_year, period_id, can_edit)
-                VALUES (?, ?, ?, ?, ?, 0)
-                ON DUPLICATE KEY UPDATE
-                  submitted_at = CURRENT_TIMESTAMP,
-                  can_edit = 0
-              `;
-
-              connection.query(
-                submissionSql,
-                [userId, sectionId, subCode, schoolYear, periodId],
-                (err) => {
-                  if (err) {
-                    return connection.rollback(() => {
-                      console.error("Error recording submission:", err);
-                      res.status(500).json({
-                        success: false,
-                        message: "Error submitting grades"
-                      });
-                    });
-                  }
-
-                  const updateAchievementsSql = `
-                    INSERT INTO student_achievements 
-                      (user_id, school_year, yearlevel, period_id, grading_period, average, achievement, total_subjects, graded_subjects)
-                    SELECT 
-                      gr.user_id,
-                      gr.school_year,
-                      gr.yearlevel,
-                      gr.period_id,
-                      gr.grading_period,
-                      ROUND(AVG(gr.final_grade), 2) as average,
-                      CASE 
-                        WHEN AVG(gr.final_grade) >= 95 THEN 'With High Honor'
-                        WHEN AVG(gr.final_grade) >= 90 THEN 'With Honor'
-                        ELSE '----'
-                      END as achievement,
-                      COUNT(DISTINCT gr.sub_code) as total_subjects,
-                      COUNT(DISTINCT gr.sub_code) as graded_subjects
-                    FROM grade_records gr
-                    WHERE gr.school_year = ?
-                      AND gr.period_id = ?
-                      AND gr.section_id = ?
-                      AND gr.final_grade IS NOT NULL
-                    GROUP BY gr.user_id, gr.school_year, gr.yearlevel, gr.period_id, gr.grading_period
-                    ON DUPLICATE KEY UPDATE
-                      average = VALUES(average),
-                      achievement = VALUES(achievement),
-                      total_subjects = VALUES(total_subjects),
-                      graded_subjects = VALUES(graded_subjects)
-                  `;
-
-                  connection.query(
-                    updateAchievementsSql,
-                    [schoolYear, periodId, sectionId],
-                    (err) => {
-                      if (err) {
-                        return connection.rollback(() => {
-                          console.error("Error updating achievements:", err);
-                          res.status(500).json({
-                            success: false,
-                            message: "Error updating achievements"
-                          });
-                        });
-                      }
-
-                      connection.commit((err) => {
-                        if (err) {
-                          return connection.rollback(() => {
-                            console.error("Commit error:", err);
-                            res.status(500).json({
-                              success: false,
-                              message: "Error submitting grades"
-                            });
-                          });
-                        }
-
-                        console.log(`Grades submitted successfully by ${userId}`);
-                        res.status(200).json({
-                          success: true,
-                          message: "Grades submitted successfully"
-                        });
-                      });
-                    }
-                  );
-                }
-              );
-            })
-            .catch((error) => {
-              connection.rollback(() => {
-                console.error("Error inserting grades:", error);
-                res.status(500).json({
-                  success: false,
-                  message: error.message || "Error submitting grades"
-                });
-              });
-            });
-        });
-      });
+      await conn.query(
+        upsertGradeSql,
+        [student_id, subCode, userId, sectionId, yearlevel, schoolYear, periodId, gradingPeriod, gradeValue, remarks]
+      );
     }
-  );
-};
 
-const requestReattempt = (req, res) => {
+    const submissionSql = `
+      INSERT INTO grade_submissions 
+        (teacher_id, section_id, sub_code, school_year, period_id, can_edit)
+      VALUES (?, ?, ?, ?, ?, 0)
+      ON DUPLICATE KEY UPDATE
+        submitted_at = CURRENT_TIMESTAMP,
+        can_edit = 0
+    `;
+
+    await conn.query(submissionSql, [userId, sectionId, subCode, schoolYear, periodId]);
+
+    const updateAchievementsSql = `
+      INSERT INTO student_achievements 
+        (user_id, school_year, yearlevel, period_id, grading_period, average, achievement, total_subjects, graded_subjects)
+      SELECT 
+        gr.user_id,
+        gr.school_year,
+        gr.yearlevel,
+        gr.period_id,
+        gr.grading_period,
+        ROUND(AVG(gr.final_grade), 2) as average,
+        CASE 
+          WHEN AVG(gr.final_grade) >= 95 THEN 'With High Honor'
+          WHEN AVG(gr.final_grade) >= 90 THEN 'With Honor'
+          ELSE '----'
+        END as achievement,
+        COUNT(DISTINCT gr.sub_code) as total_subjects,
+        COUNT(DISTINCT gr.sub_code) as graded_subjects
+      FROM grade_records gr
+      WHERE gr.school_year = ?
+        AND gr.period_id = ?
+        AND gr.section_id = ?
+        AND gr.final_grade IS NOT NULL
+      GROUP BY gr.user_id, gr.school_year, gr.yearlevel, gr.period_id, gr.grading_period
+      ON DUPLICATE KEY UPDATE
+        average = VALUES(average),
+        achievement = VALUES(achievement),
+        total_subjects = VALUES(total_subjects),
+        graded_subjects = VALUES(graded_subjects)
+    `;
+
+    await conn.query(updateAchievementsSql, [schoolYear, periodId, sectionId]);
+
+    await conn.commit();
+
+    console.log(`Grades submitted successfully by ${userId}`);
+    res.status(200).json({
+      success: true,
+      message: "Grades submitted successfully"
+    });
+  } catch (error) {
+    if (transactionStarted) {
+      await conn.rollback();
+    }
+    throw error;
+  } finally {
+    conn.release();
+  }
+});
+
+const requestReattempt = asyncHandler(async (req, res) => {
   const userId = req.user.user_id;
   const { sectionId, subCode, schoolYear, periodId, reason } = req.body;
 
@@ -507,85 +403,73 @@ const requestReattempt = (req, res) => {
       AND status = 'Pending'
   `;
 
-  connection.query(
+  const [existingRequest] = await db.query(
     checkRequestSql,
-    [userId, sectionId, subCode, schoolYear, periodId],
-    (err, results) => {
-      if (err) {
-        console.error("Error checking request:", err);
-        return res.status(500).json({
-          success: false,
-          message: "Error submitting request"
-        });
-      }
-
-      if (results.length > 0) {
-        return res.status(400).json({
-          success: false,
-          message: "You already have a pending re-attempt request for this section"
-        });
-      }
-
-      const infoSql = `
-        SELECT 
-          si.sub_name,
-          sec.section_name,
-          sec.yearlevel,
-          gp.grading_period
-        FROM subject_info si
-        CROSS JOIN section_info sec
-        INNER JOIN grading_periods gp 
-          ON sec.yearlevel = gp.yearlevel 
-          AND gp.period_id = ?
-        WHERE si.sub_code = ? AND sec.section_id = ?
-      `;
-
-      connection.query(infoSql, [periodId, subCode, sectionId], (err, infoResults) => {
-        if (err || infoResults.length === 0) {
-          console.error("Error fetching info:", err);
-          return res.status(500).json({
-            success: false,
-            message: "Error submitting request"
-          });
-        }
-
-        const info = infoResults[0];
-
-        const insertRequestSql = `
-          INSERT INTO reattempt_requests
-            (teacher_id, section_id, sub_code, school_year, period_id, 
-             subject_name, section_name, grading_period, reason, status)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending')
-        `;
-
-        connection.query(
-          insertRequestSql,
-          [
-            userId, sectionId, subCode, schoolYear, periodId,
-            info.sub_name, info.section_name, info.grading_period, reason
-          ],
-          (err, result) => {
-            if (err) {
-              console.error("Error inserting request:", err);
-              return res.status(500).json({
-                success: false,
-                message: "Error submitting request"
-              });
-            }
-
-            console.log(`Re-attempt request submitted by ${userId}`);
-            res.status(200).json({
-              success: true,
-              message: "Re-attempt request submitted successfully"
-            });
-          }
-        );
-      });
-    }
+    [userId, sectionId, subCode, schoolYear, periodId]
   );
-};
 
-const getReattemptStatus = (req, res) => {
+  if (existingRequest.length > 0) {
+    return res.status(400).json({
+      success: false,
+      message: "You already have a pending re-attempt request for this section"
+    });
+  }
+
+  const infoSql = `
+    SELECT 
+      si.sub_name,
+      sec.section_name,
+      sec.yearlevel,
+      gp.grading_period
+    FROM subject_info si
+    CROSS JOIN section_info sec
+    INNER JOIN grading_periods gp 
+      ON sec.yearlevel = gp.yearlevel 
+      AND gp.period_id = ?
+    WHERE si.sub_code = ? AND sec.section_id = ?
+  `;
+
+  const [infoResults] = await db.query(infoSql, [periodId, subCode, sectionId]);
+
+  if (infoResults.length === 0) {
+    return res.status(500).json({
+      success: false,
+      message: "Error submitting request"
+    });
+  }
+
+  const info = infoResults[0];
+
+  const insertRequestSql = `
+    INSERT INTO reattempt_requests
+      (teacher_id, section_id, sub_code, school_year, period_id, 
+       subject_name, section_name, grading_period, reason, status)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'Pending')
+  `;
+
+  await db.query(
+    insertRequestSql,
+    [
+      userId,
+      sectionId,
+      subCode,
+      schoolYear,
+      periodId,
+      info.sub_name,
+      info.section_name,
+      info.grading_period,
+      reason
+    ]
+  );
+
+  console.log(`Re-attempt request submitted by ${userId}`);
+  res.status(200).json({
+    success: true,
+    message: "Re-attempt request submitted successfully"
+  });
+});
+
+const getReattemptStatus = asyncHandler(async (req, res) => {
   const userId = req.user.user_id;
   const { sectionId, subCode, schoolYear, periodId } = req.query;
 
@@ -605,34 +489,25 @@ const getReattemptStatus = (req, res) => {
     LIMIT 1
   `;
 
-  connection.query(
+  const [results] = await db.query(
     sql,
-    [userId, sectionId, subCode, schoolYear, periodId],
-    (err, results) => {
-      if (err) {
-        console.error("Error fetching reattempt status:", err);
-        return res.status(500).json({
-          success: false,
-          message: "Error fetching status"
-        });
-      }
-
-      if (results.length === 0) {
-        return res.status(200).json({
-          success: true,
-          data: null
-        });
-      }
-
-      res.status(200).json({
-        success: true,
-        data: results[0]
-      });
-    }
+    [userId, sectionId, subCode, schoolYear, periodId]
   );
-};
 
-const getActiveSchoolYear = (req, res) => {
+  if (results.length === 0) {
+    return res.status(200).json({
+      success: true,
+      data: null
+    });
+  }
+
+  res.status(200).json({
+    success: true,
+    data: results[0]
+  });
+});
+
+const getActiveSchoolYear = asyncHandler(async (req, res) => {
   const sql = `
     SELECT school_year, start_date, end_date
     FROM school_years
@@ -640,30 +515,22 @@ const getActiveSchoolYear = (req, res) => {
     LIMIT 1
   `;
 
-  connection.query(sql, (err, results) => {
-    if (err) {
-      console.error("Error fetching active school year:", err);
-      return res.status(500).json({
-        success: false,
-        message: "Error fetching school year"
-      });
-    }
+  const [results] = await db.query(sql);
 
-    if (results.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: "No active school year found"
-      });
-    }
-
-    res.status(200).json({
-      success: true,
-      data: results[0]
+  if (results.length === 0) {
+    return res.status(404).json({
+      success: false,
+      message: "No active school year found"
     });
-  });
-};
+  }
 
-const getGradingPeriods = (req, res) => {
+  res.status(200).json({
+    success: true,
+    data: results[0]
+  });
+});
+
+const getGradingPeriods = asyncHandler(async (req, res) => {
   const { yearlevel, schoolYear } = req.query;
 
   if (!yearlevel) {
@@ -698,23 +565,15 @@ const getGradingPeriods = (req, res) => {
 
   sql += " ORDER BY period_id ASC";
 
-  connection.query(sql, params, (err, results) => {
-    if (err) {
-      console.error("Error fetching grading periods:", err);
-      return res.status(500).json({
-        success: false,
-        message: "Error fetching grading periods"
-      });
-    }
+  const [results] = await db.query(sql, params);
 
-    res.status(200).json({
-      success: true,
-      data: results
-    });
+  res.status(200).json({
+    success: true,
+    data: results
   });
-};
+});
 
-const updateEmail = (req, res) => {
+const updateEmail = asyncHandler(async (req, res) => {
   const userId = req.user.user_id;
   const { newEmail } = req.body;
 
@@ -725,8 +584,7 @@ const updateEmail = (req, res) => {
     });
   }
 
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  if (!emailRegex.test(newEmail)) {
+  if (!EMAIL_REGEX.test(newEmail)) {
     return res.status(400).json({
       success: false,
       message: "Please enter a valid email address"
@@ -734,77 +592,43 @@ const updateEmail = (req, res) => {
   }
 
   const checkEmailSql = "SELECT user_id FROM tblusers WHERE email = ? AND user_id != ?";
-  
-  connection.query(checkEmailSql, [newEmail, userId], (err, emailResults) => {
-    if (err) {
-      console.error("Error checking email:", err);
-      return res.status(500).json({
-        success: false,
-        message: "Error updating email"
-      });
-    }
+  const [emailResults] = await db.query(checkEmailSql, [newEmail, userId]);
 
-    if (emailResults.length > 0) {
-      return res.status(400).json({
-        success: false,
-        message: "Email already in use"
-      });
-    }
-
-    connection.beginTransaction((err) => {
-      if (err) {
-        return res.status(500).json({
-          success: false,
-          message: "Error updating email"
-        });
-      }
-
-      const updateUsersSql = "UPDATE tblusers SET email = ? WHERE user_id = ?";
-      const updateTeacherSql = "UPDATE teacher_info SET email = ? WHERE user_id = ?";
-
-      connection.query(updateUsersSql, [newEmail, userId], (err) => {
-        if (err) {
-          return connection.rollback(() => {
-            res.status(500).json({
-              success: false,
-              message: "Error updating email"
-            });
-          });
-        }
-
-        connection.query(updateTeacherSql, [newEmail, userId], (err) => {
-          if (err) {
-            return connection.rollback(() => {
-              res.status(500).json({
-                success: false,
-                message: "Error updating email"
-              });
-            });
-          }
-
-          connection.commit((err) => {
-            if (err) {
-              return connection.rollback(() => {
-                res.status(500).json({
-                  success: false,
-                  message: "Error updating email"
-                });
-              });
-            }
-
-            console.log(`Email updated for ${userId}`);
-            res.status(200).json({
-              success: true,
-              message: "Email updated successfully"
-            });
-          });
-        });
-      });
+  if (emailResults.length > 0) {
+    return res.status(400).json({
+      success: false,
+      message: "Email already in use"
     });
-  });
-};
+  }
 
-const changePassword = (req, res) => {
+  const conn = await db.getConnection();
+  let transactionStarted = false;
+
+  try {
+    await conn.beginTransaction();
+    transactionStarted = true;
+
+    await conn.query("UPDATE tblusers SET email = ? WHERE user_id = ?", [newEmail, userId]);
+    await conn.query("UPDATE teacher_info SET email = ? WHERE user_id = ?", [newEmail, userId]);
+
+    await conn.commit();
+
+    console.log(`Email updated for ${userId}`);
+    res.status(200).json({
+      success: true,
+      message: "Email updated successfully"
+    });
+  } catch (error) {
+    if (transactionStarted) {
+      await conn.rollback();
+    }
+    throw error;
+  } finally {
+    conn.release();
+  }
+});
+
+const changePassword = asyncHandler(async (req, res) => {
   const userId = req.user.user_id;
   const { currentPassword, newPassword } = req.body;
 
@@ -815,50 +639,40 @@ const changePassword = (req, res) => {
     });
   }
 
-  if (newPassword.length < 8) {
+  if (newPassword.length < MIN_PASSWORD_LENGTH) {
     return res.status(400).json({
       success: false,
       message: "Password must be at least 8 characters"
     });
   }
 
-  const verifyPasswordSql = "SELECT password FROM tblusers WHERE user_id = ?";
-  
-  connection.query(verifyPasswordSql, [userId], (err, results) => {
-    if (err) {
-      console.error("Error verifying password:", err);
-      return res.status(500).json({
-        success: false,
-        message: "Error changing password"
-      });
-    }
+  const [userRows] = await db.query("SELECT password FROM tblusers WHERE user_id = ?", [userId]);
 
-    if (results.length === 0 || results[0].password !== currentPassword) {
-      return res.status(401).json({
-        success: false,
-        message: "Current password is incorrect"
-      });
-    }
-
-    const updatePasswordSql = "UPDATE tblusers SET password = ? WHERE user_id = ?";
-    
-    connection.query(updatePasswordSql, [newPassword, userId], (err) => {
-      if (err) {
-        console.error("Error updating password:", err);
-        return res.status(500).json({
-          success: false,
-          message: "Error changing password"
-        });
-      }
-
-      console.log(`Password changed for ${userId}`);
-      res.status(200).json({
-        success: true,
-        message: "Password changed successfully"
-      });
+  if (userRows.length === 0) {
+    return res.status(404).json({
+      success: false,
+      message: "User not found"
     });
+  }
+
+  const isMatch = await bcrypt.compare(currentPassword, userRows[0].password);
+
+  if (!isMatch) {
+    return res.status(401).json({
+      success: false,
+      message: "Current password is incorrect"
+    });
+  }
+
+  const hashedPassword = await bcrypt.hash(newPassword, 10);
+  await db.query("UPDATE tblusers SET password = ? WHERE user_id = ?", [hashedPassword, userId]);
+
+  console.log(`Password changed for ${userId}`);
+  res.status(200).json({
+    success: true,
+    message: "Password changed successfully"
   });
-};
+});
 
 module.exports = {
   getTeacherProfile,

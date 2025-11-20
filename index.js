@@ -3,6 +3,7 @@ const express = require("express");
 const moment = require("moment");
 const cors = require("cors");
 const connection = require("./database/db");
+const errorHandler = require("./middleware/errorMiddleware");
 
 // Import all routes
 const userRoutes = require("./routes/userRoutes");
@@ -66,19 +67,13 @@ app.get("/api/test", (req, res) => {
 });
 
 // 404 handler
-app.use((req, res) => {
-  res.status(404).json({ success: false, message: "Route not found" });
+app.use((req, res, next) => {
+  res.status(404);
+  next(new Error("Route not found"));
 });
 
 // Error handler
-app.use((err, req, res, next) => {
-  console.error("Server error:", err);
-  res.status(500).json({
-    success: false,
-    message: "Internal server error",
-    error: err.message
-  });
-});
+app.use(errorHandler);
 
 // Start server
 app.listen(PORT, () => {
