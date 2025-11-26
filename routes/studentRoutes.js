@@ -5,7 +5,8 @@ const {
   getStudentProfile,getStudentGrades,
   getStudentAchievements,getHistoricalGrades,
   updateEmail,changePassword,
-  getGradingPeriods,getSchoolYears
+  getGradingPeriods,getSchoolYears,
+  getEnrolledSubjects
 } = require("../controllers/studentController");
 
 const verifyStudent = (req, res, next) => {
@@ -22,6 +23,7 @@ router.use(verifyToken);
 router.use(verifyStudent);
 
 router.get("/profile", getStudentProfile);
+router.get("/subjects", getEnrolledSubjects);
 router.get("/grades", getStudentGrades);
 router.get("/achievements", getStudentAchievements);
 router.get("/historical-grades", getHistoricalGrades);

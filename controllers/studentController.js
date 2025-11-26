@@ -383,6 +383,33 @@ const getSchoolYears = asyncHandler(async (req, res) => {
   });
 });
 
+const getEnrolledSubjects = asyncHandler(async (req, res) => {
+  const userId = req.user.user_id;
+
+  const sql = `
+    SELECT 
+      ssa.sub_code,
+      si.sub_name,
+      ssa.teacher_id,
+      CONCAT(t.fname, ' ', t.lname) as teacher_name,
+      ssa.school_year,
+      ssa.yearlevel
+    FROM subject_section_assignments ssa
+    INNER JOIN student_info s ON ssa.section_id = s.section_id
+    INNER JOIN subject_info si ON ssa.sub_code = si.sub_code AND ssa.school_year = si.school_year
+    LEFT JOIN teacher_info t ON ssa.teacher_id = t.user_id
+    WHERE s.user_id = ?
+    ORDER BY si.sub_name
+  `;
+
+  const [results] = await db.query(sql, [userId]);
+
+  res.status(200).json({
+    success: true,
+    data: results
+  });
+});
+
 module.exports = {
   getStudentProfile,
   getStudentGrades,
@@ -391,5 +418,6 @@ module.exports = {
   updateEmail,
   changePassword,
   getGradingPeriods,
-  getSchoolYears
+  getSchoolYears,
+  getEnrolledSubjects
 };

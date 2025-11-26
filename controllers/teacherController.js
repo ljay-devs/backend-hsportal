@@ -266,7 +266,7 @@ const submitGrades = asyncHandler(async (req, res) => {
   }
 
   const periodSql = `
-    SELECT grading_period, yearlevel
+    SELECT gp.grading_period, gp.yearlevel
     FROM grading_periods gp
     INNER JOIN section_info sec ON gp.yearlevel = sec.yearlevel
     WHERE gp.period_id = ? AND gp.school_year = ? AND sec.section_id = ?
@@ -291,6 +291,8 @@ const submitGrades = asyncHandler(async (req, res) => {
     await conn.beginTransaction();
     transactionStarted = true;
 
+    const gradeValues = [];
+
     for (const grade of grades) {
       const { student_id, final_grade } = grade;
 
@@ -306,19 +308,22 @@ const submitGrades = asyncHandler(async (req, res) => {
 
       const remarks = gradeValue >= 75 ? 'Passed' : 'Failed';
 
+      gradeValues.push([
+        student_id, subCode, userId, sectionId, yearlevel, schoolYear, periodId, gradingPeriod, gradeValue, remarks
+      ]);
+    }
+
+    if (gradeValues.length > 0) {
       const upsertGradeSql = `
         INSERT INTO grade_records 
           (user_id, sub_code, teacher_id, section_id, yearlevel, school_year, period_id, grading_period, final_grade, remarks)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES ?
         ON DUPLICATE KEY UPDATE
           final_grade = VALUES(final_grade),
           remarks = VALUES(remarks)
       `;
 
-      await conn.query(
-        upsertGradeSql,
-        [student_id, subCode, userId, sectionId, yearlevel, schoolYear, periodId, gradingPeriod, gradeValue, remarks]
-      );
+      await conn.query(upsertGradeSql, [gradeValues]);
     }
 
     const submissionSql = `

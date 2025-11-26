@@ -270,7 +270,7 @@ const submitGrades = asyncHandler(async (req, res) => {
   }
 
   const periodSql = `
-    SELECT grading_period, yearlevel
+    SELECT gp.grading_period, gp.yearlevel
     FROM grading_periods gp
     INNER JOIN section_info sec ON gp.yearlevel = sec.yearlevel
     WHERE gp.period_id = ? AND gp.school_year = ? AND sec.section_id = ?
